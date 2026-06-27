@@ -4,7 +4,8 @@ import { useEffect } from 'react';
 
 export function useAlerts(onAlert) {
   useEffect(() => {
-    const eventSource = new EventSource('http://localhost:5000/api/alertes/stream');
+  const baseURL = import.meta.env.VITE_API_URL || 'http://localhost:5000';
+  const eventSource = new EventSource(`${baseURL}/api/alertes/stream`);
 
     eventSource.onopen = () => {
       console.log('✅ SSE Connecté');
