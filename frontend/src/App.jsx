@@ -1,6 +1,6 @@
-// frontend/src/App.jsx - VERSION FINALE PROPRE
+// frontend/src/App.jsx - VERSION CORRIGÉE (avec Link au lieu de <a>)
 
-import { Routes, Route, Navigate } from 'react-router-dom';
+import { Routes, Route, Navigate, Link } from 'react-router-dom';
 import { useState } from 'react';
 
 // Pages
@@ -13,7 +13,6 @@ import { AlertesPage } from './pages/Alertes/AlertesPage';
 import { RapportsPage } from './pages/Rapports/RapportsPage';
 
 // Components
-//import { UserProfile } from './components/UserProfile';
 import { AlertNotification } from './components/AlertNotification';
 
 // Contexts & Hooks
@@ -26,15 +25,15 @@ function Navbar() {
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
         <div className="flex justify-between h-16">
           <div className="flex items-center gap-8">
-            <a href="/" className="text-2xl font-bold text-red-600">SMI</a>
+            <Link to="/" className="text-2xl font-bold text-red-600">SMI</Link>
             <div className="flex gap-4">
-              <a href="/" className="text-gray-700 hover:text-gray-900 font-medium">Dashboard</a>
-              <a href="/filiales" className="text-gray-700 hover:text-gray-900 font-medium">Filiales</a>
-              <a href="/recettes" className="text-gray-700 hover:text-gray-900 font-medium">Recettes</a>
-              <a href="/depenses" className="text-gray-700 hover:text-gray-900 font-medium">Dépenses</a>
-              <a href="/alertes" className="text-gray-700 hover:text-gray-900 font-medium">🚨 Alertes</a>
-              <a href="/rapports" className="text-gray-700 hover:text-gray-900 font-medium">📄 Rapports</a>
-              <a href="/parametres" className="text-gray-700 hover:text-gray-900 font-medium">⚙️ Paramètres</a>
+              <Link to="/" className="text-gray-700 hover:text-gray-900 font-medium">Dashboard</Link>
+              <Link to="/filiales" className="text-gray-700 hover:text-gray-900 font-medium">Filiales</Link>
+              <Link to="/recettes" className="text-gray-700 hover:text-gray-900 font-medium">Recettes</Link>
+              <Link to="/depenses" className="text-gray-700 hover:text-gray-900 font-medium">Dépenses</Link>
+              <Link to="/alertes" className="text-gray-700 hover:text-gray-900 font-medium">🚨 Alertes</Link>
+              <Link to="/rapports" className="text-gray-700 hover:text-gray-900 font-medium">📄 Rapports</Link>
+              <Link to="/parametres" className="text-gray-700 hover:text-gray-900 font-medium">⚙️ Paramètres</Link>
             </div>
           </div>
         </div>
