@@ -1,24 +1,23 @@
-// backend/src/routes-rapports-excel.js - Toutes les routes Excel
+// backend/src/routes-rapports-excel.js - VERSION CORRIGÉE
+//
+// Corrections :
+// 1) Utilise getParametres(supabase) pour normaliser les noms de champs (smi.nomEntreprise, smi.tauxTva, smi.tauxIs)
+// 2) maybeSingle() au lieu de single() pour ne pas planter si aucun paramètre
+// 3) AJOUT de la route /api/rapports/complet-excel qui était MANQUANTE (le frontend l'appelle mais elle n'existait pas !)
 
 import ExcelJS from 'exceljs';
+import { getParametres } from './services/parametres-helper.js';
 
 export function registerExcelRoutes(app, supabase, formatMontantPDF) {
-  
+
   // ========== EXCEL - RECETTES ==========
   app.get('/api/rapports/recettes-excel', async (req, res) => {
     try {
       const { dateDebut, dateFin, filialeId } = req.query;
 
-      const { data: parametres } = await supabase
-        .from('parametres')
-        .select('*')
-        .eq('id', 1)
-        .single();
+      const smi = await getParametres(supabase);
 
-      const smi = parametres || { nomEntreprise: '...', adresse: '...', email: '...' };
-
-      let query = supabase.from('recettes').select('*');
-      
+      let query = supabase.from('recettes').select('*, filiales(nom, code)');
       if (dateDebut) query = query.gte('created_at', dateDebut);
       if (dateFin) query = query.lte('created_at', dateFin);
       if (filialeId) query = query.eq('filiale_id', filialeId);
@@ -26,57 +25,62 @@ export function registerExcelRoutes(app, supabase, formatMontantPDF) {
       const { data: recettes, error } = await query;
       if (error) throw error;
 
-      const { data: filiales } = await supabase.from('filiales').select('id, nom, code');
-      const filialesMap = {};
-      (filiales || []).forEach(f => {
-        filialesMap[f.id] = f;
-      });
-
       const workbook = new ExcelJS.Workbook();
       const worksheet = workbook.addWorksheet('Recettes');
 
       let row = 1;
 
-      worksheet.mergeCells(`A${row}:D${row}`);
+      // ✅ En-tête entreprise avec valeurs valides
+      worksheet.mergeCells(`A${row}:E${row}`);
       worksheet.getCell(`A${row}`).value = smi.nomEntreprise;
       worksheet.getCell(`A${row}`).font = { bold: true, size: 12 };
       worksheet.getCell(`A${row}`).alignment = { horizontal: 'center' };
       row++;
 
-      worksheet.mergeCells(`A${row}:D${row}`);
-      worksheet.getCell(`A${row}`).value = `${smi.adresse} | ${smi.email}`;
+      worksheet.mergeCells(`A${row}:E${row}`);
+      worksheet.getCell(`A${row}`).value = `${smi.adresse} | ${smi.email} | ${smi.telephone}`;
       worksheet.getCell(`A${row}`).font = { size: 10 };
+      worksheet.getCell(`A${row}`).alignment = { horizontal: 'center' };
+      row++;
+
+      worksheet.mergeCells(`A${row}:E${row}`);
+      worksheet.getCell(`A${row}`).value = `Rapport des Recettes - Généré le ${new Date().toLocaleDateString('fr-FR')}`;
+      worksheet.getCell(`A${row}`).font = { italic: true, size: 10 };
       worksheet.getCell(`A${row}`).alignment = { horizontal: 'center' };
       row += 2;
 
       worksheet.columns = [
         { header: 'Filiale', key: 'filiale', width: 25 },
-        { header: 'Montant (FCFA)', key: 'montant', width: 15 },
-        { header: 'Catégorie', key: 'categorie', width: 20 },
+        { header: 'Code', key: 'code', width: 12 },
+        { header: 'Montant (FCFA)', key: 'montant', width: 18 },
         { header: 'Description', key: 'description', width: 30 },
-        { header: 'Date', key: 'date', width: 12 }
+        { header: 'Date', key: 'date', width: 14 }
       ];
 
-      worksheet.getRow(1).font = { bold: true, color: { argb: 'FFFFFFFF' } };
-      worksheet.getRow(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFC41E3A' } };
+      const headerRow = worksheet.getRow(row);
+      headerRow.font = { bold: true, color: { argb: 'FFFFFFFF' } };
+      headerRow.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFC41E3A' } };
+      row++;
 
+      const startDataRow = row;
       if (recettes && recettes.length > 0) {
         recettes.forEach(r => {
-          const filiale = filialesMap[r.filiale_id];
           worksheet.addRow({
-            filiale: filiale?.nom || 'N/A',
+            filiale: r.filiales?.nom || 'N/A',
+            code: r.filiales?.code || 'N/A',
             montant: r.montant || 0,
-            categorie: r.categorie || 'N/A',
             description: r.description || '',
             date: new Date(r.created_at).toLocaleDateString('fr-FR')
           });
+          row++;
         });
 
         const totalRow = worksheet.addRow({});
         totalRow.getCell('filiale').value = 'TOTAL';
         totalRow.getCell('montant').value = {
-          formula: `SUM(B2:B${recettes.length + 1})`
+          formula: `SUM(C${startDataRow}:C${row - 1})`
         };
+        totalRow.getCell('montant').numFmt = '#,##0';
         totalRow.font = { bold: true };
         totalRow.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF0F0F0' } };
       }
@@ -97,16 +101,9 @@ export function registerExcelRoutes(app, supabase, formatMontantPDF) {
     try {
       const { dateDebut, dateFin } = req.query;
 
-      const { data: parametres } = await supabase
-        .from('parametres')
-        .select('*')
-        .eq('id', 1)
-        .single();
-
-      const smi = parametres || { nomEntreprise: '...', adresse: '...', email: '...' };
+      const smi = await getParametres(supabase);
 
       let query = supabase.from('depenses').select('*');
-      
       if (dateDebut) query = query.gte('created_at', dateDebut);
       if (dateFin) query = query.lte('created_at', dateFin);
 
@@ -125,36 +122,47 @@ export function registerExcelRoutes(app, supabase, formatMontantPDF) {
       row++;
 
       worksheet.mergeCells(`A${row}:D${row}`);
-      worksheet.getCell(`A${row}`).value = `${smi.adresse} | ${smi.email}`;
+      worksheet.getCell(`A${row}`).value = `${smi.adresse} | ${smi.email} | ${smi.telephone}`;
       worksheet.getCell(`A${row}`).font = { size: 10 };
+      worksheet.getCell(`A${row}`).alignment = { horizontal: 'center' };
+      row++;
+
+      worksheet.mergeCells(`A${row}:D${row}`);
+      worksheet.getCell(`A${row}`).value = `Rapport des Dépenses - Généré le ${new Date().toLocaleDateString('fr-FR')}`;
+      worksheet.getCell(`A${row}`).font = { italic: true, size: 10 };
       worksheet.getCell(`A${row}`).alignment = { horizontal: 'center' };
       row += 2;
 
       worksheet.columns = [
-        { header: 'Montant (FCFA)', key: 'montant', width: 15 },
-        { header: 'Type', key: 'type', width: 20 },
+        { header: 'Montant (FCFA)', key: 'montant', width: 18 },
+        { header: 'Catégorie', key: 'categorie', width: 22 },
         { header: 'Description', key: 'description', width: 35 },
-        { header: 'Date', key: 'date', width: 12 }
+        { header: 'Date', key: 'date', width: 14 }
       ];
 
-      worksheet.getRow(1).font = { bold: true, color: { argb: 'FFFFFFFF' } };
-      worksheet.getRow(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFC41E3A' } };
+      const headerRow = worksheet.getRow(row);
+      headerRow.font = { bold: true, color: { argb: 'FFFFFFFF' } };
+      headerRow.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFC41E3A' } };
+      row++;
 
+      const startDataRow = row;
       if (depenses && depenses.length > 0) {
         depenses.forEach(d => {
           worksheet.addRow({
             montant: d.montant || 0,
-            type: d.type || 'N/A',
+            categorie: d.categorie || d.type || 'N/A',
             description: d.description || '',
             date: new Date(d.created_at).toLocaleDateString('fr-FR')
           });
+          row++;
         });
 
         const totalRow = worksheet.addRow({});
-        totalRow.getCell('type').value = 'TOTAL';
+        totalRow.getCell('categorie').value = 'TOTAL';
         totalRow.getCell('montant').value = {
-          formula: `SUM(A2:A${depenses.length + 1})`
+          formula: `SUM(A${startDataRow}:A${row - 1})`
         };
+        totalRow.getCell('montant').numFmt = '#,##0';
         totalRow.font = { bold: true };
         totalRow.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF0F0F0' } };
       }
@@ -175,22 +183,10 @@ export function registerExcelRoutes(app, supabase, formatMontantPDF) {
     try {
       const { filialeId, dateDebut, dateFin } = req.query;
 
-      const { data: parametres } = await supabase
-        .from('parametres')
-        .select('*')
-        .eq('id', 1)
-        .single();
+      const smi = await getParametres(supabase);
 
-      const smi = parametres || { 
-        nomEntreprise: '...', 
-        adresse: '...', 
-        email: '...',
-        tauxtva: 18,
-        tauxis: 30
-      };
-
-      const tauxTVA = parseFloat(smi.tauxtva || 18) / 100;
-      const tauxIS = parseFloat(smi.tauxis || 30) / 100;
+      const tauxTVA = parseFloat(smi.tauxTva || 18) / 100;
+      const tauxIS = parseFloat(smi.tauxIs || 30) / 100;
 
       let recettesQuery = supabase.from('recettes').select('*');
       if (filialeId) recettesQuery = recettesQuery.eq('filiale_id', filialeId);
@@ -214,7 +210,7 @@ export function registerExcelRoutes(app, supabase, formatMontantPDF) {
 
       const totalRecettes = recettes.reduce((sum, r) => sum + (r.montant || 0), 0);
       const totalDepenses = depenses.reduce((sum, d) => sum + (d.montant || 0), 0);
-      
+
       const montantTVA = totalRecettes * tauxTVA;
       const baseIS = totalRecettes - montantTVA - totalDepenses;
       const montantIS = Math.max(baseIS, 0) * tauxIS;
@@ -233,7 +229,7 @@ export function registerExcelRoutes(app, supabase, formatMontantPDF) {
       row++;
 
       worksheet.mergeCells(`A${row}:D${row}`);
-      worksheet.getCell(`A${row}`).value = `${smi.adresse} | ${smi.email}`;
+      worksheet.getCell(`A${row}`).value = `${smi.adresse} | ${smi.email} | ${smi.telephone}`;
       worksheet.getCell(`A${row}`).font = { size: 10 };
       worksheet.getCell(`A${row}`).alignment = { horizontal: 'center' };
       row += 2;
@@ -242,19 +238,19 @@ export function registerExcelRoutes(app, supabase, formatMontantPDF) {
       worksheet.getCell(`A${row}`).font = { bold: true, size: 14 };
       row++;
 
-      worksheet.getCell(`A${row}`).value = `Genere le: ${new Date().toLocaleDateString('fr-FR')}`;
+      worksheet.getCell(`A${row}`).value = `Généré le: ${new Date().toLocaleDateString('fr-FR')}`;
       worksheet.getCell(`A${row}`).font = { size: 10 };
       row += 2;
 
       if (dateDebut || dateFin) {
-        worksheet.getCell(`A${row}`).value = 'Periode:';
+        worksheet.getCell(`A${row}`).value = 'Période:';
         worksheet.getCell(`A${row}`).font = { bold: true };
         row++;
-        worksheet.getCell(`A${row}`).value = `${dateDebut} a ${dateFin}`;
+        worksheet.getCell(`A${row}`).value = `${dateDebut || 'Début'} à ${dateFin || 'Aujourd\'hui'}`;
         row += 2;
       }
 
-      worksheet.getCell(`A${row}`).value = 'RESUME GLOBAL';
+      worksheet.getCell(`A${row}`).value = 'RÉSUMÉ GLOBAL';
       worksheet.getCell(`A${row}`).font = { bold: true, size: 11 };
       row++;
 
@@ -263,7 +259,7 @@ export function registerExcelRoutes(app, supabase, formatMontantPDF) {
       worksheet.getCell(`B${row}`).numFmt = '#,##0';
       row++;
 
-      worksheet.getCell(`A${row}`).value = 'Total Depenses';
+      worksheet.getCell(`A${row}`).value = 'Total Dépenses';
       worksheet.getCell(`B${row}`).value = totalDepenses;
       worksheet.getCell(`B${row}`).numFmt = '#,##0';
       row += 2;
@@ -288,19 +284,18 @@ export function registerExcelRoutes(app, supabase, formatMontantPDF) {
       worksheet.getCell(`B${row}`).font = { bold: true };
       row++;
 
-      worksheet.getCell(`A${row}`).value = 'Ratio Rentabilite (%)';
-      worksheet.getCell(`B${row}`).value = ratioRentabilite;
+      worksheet.getCell(`A${row}`).value = 'Ratio Rentabilité (%)';
+      worksheet.getCell(`B${row}`).value = parseFloat(ratioRentabilite);
       worksheet.getCell(`B${row}`).numFmt = '0.00';
       row += 2;
 
-      worksheet.getCell(`A${row}`).value = 'DETAILS PAR FILIALE';
+      worksheet.getCell(`A${row}`).value = 'DÉTAILS PAR FILIALE';
       worksheet.getCell(`A${row}`).font = { bold: true, size: 11 };
       row++;
 
       worksheet.getCell(`A${row}`).value = 'Filiale';
       worksheet.getCell(`B${row}`).value = 'Recettes';
       worksheet.getCell(`C${row}`).value = 'Solde';
-      worksheet.getRow(row).font = { bold: true };
       worksheet.getRow(row).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFC41E3A' } };
       worksheet.getRow(row).font = { bold: true, color: { argb: 'FFFFFFFF' } };
       row++;
@@ -319,9 +314,9 @@ export function registerExcelRoutes(app, supabase, formatMontantPDF) {
 
       worksheet.columns = [
         { width: 35 },
-        { width: 15 },
-        { width: 15 },
-        { width: 15 }
+        { width: 18 },
+        { width: 18 },
+        { width: 18 }
       ];
 
       res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
@@ -335,18 +330,153 @@ export function registerExcelRoutes(app, supabase, formatMontantPDF) {
     }
   });
 
+  // ========== EXCEL - RAPPORT COMPLET (NOUVELLE ROUTE - était manquante !) ==========
+  // Le frontend l'appelait mais elle n'existait pas → 404 quand on choisissait "Complet" + Excel
+  app.get('/api/rapports/complet-excel', async (req, res) => {
+    try {
+      const { filialeId, dateDebut, dateFin } = req.query;
+
+      const smi = await getParametres(supabase);
+
+      const tauxTVA = parseFloat(smi.tauxTva || 18) / 100;
+      const tauxIS = parseFloat(smi.tauxIs || 30) / 100;
+
+      let recettesQuery = supabase.from('recettes').select('*, filiales(nom, code)');
+      if (filialeId) recettesQuery = recettesQuery.eq('filiale_id', filialeId);
+      if (dateDebut) recettesQuery = recettesQuery.gte('created_at', dateDebut);
+      if (dateFin) recettesQuery = recettesQuery.lte('created_at', dateFin);
+
+      let depensesQuery = supabase.from('depenses').select('*');
+      if (dateDebut) depensesQuery = depensesQuery.gte('created_at', dateDebut);
+      if (dateFin) depensesQuery = depensesQuery.lte('created_at', dateFin);
+
+      const [recettesRes, depensesRes, filialesRes] = await Promise.all([
+        recettesQuery,
+        depensesQuery,
+        supabase.from('filiales').select('*, domaines_activite(nom)')
+      ]);
+
+      const recettes = recettesRes.data || [];
+      const depenses = depensesRes.data || [];
+      const filiales = filialesRes.data || [];
+
+      const totalRecettes = recettes.reduce((sum, r) => sum + (r.montant || 0), 0);
+      const totalDepenses = depenses.reduce((sum, d) => sum + (d.montant || 0), 0);
+      const montantTVA = totalRecettes * tauxTVA;
+      const baseIS = totalRecettes - montantTVA - totalDepenses;
+      const montantIS = Math.max(baseIS, 0) * tauxIS;
+      const soldeNet = totalRecettes - montantTVA - totalDepenses - montantIS;
+
+      const workbook = new ExcelJS.Workbook();
+      const worksheet = workbook.addWorksheet('Rapport Complet');
+
+      let row = 1;
+
+      // En-tête entreprise
+      worksheet.mergeCells(`A${row}:E${row}`);
+      worksheet.getCell(`A${row}`).value = smi.nomEntreprise;
+      worksheet.getCell(`A${row}`).font = { bold: true, size: 12 };
+      worksheet.getCell(`A${row}`).alignment = { horizontal: 'center' };
+      row++;
+
+      worksheet.mergeCells(`A${row}:E${row}`);
+      worksheet.getCell(`A${row}`).value = `${smi.adresse} | ${smi.email} | ${smi.telephone}`;
+      worksheet.getCell(`A${row}`).font = { size: 10 };
+      worksheet.getCell(`A${row}`).alignment = { horizontal: 'center' };
+      row++;
+
+      worksheet.mergeCells(`A${row}:E${row}`);
+      worksheet.getCell(`A${row}`).value = `RAPPORT COMPLET - Généré le ${new Date().toLocaleDateString('fr-FR')}`;
+      worksheet.getCell(`A${row}`).font = { italic: true, size: 10 };
+      worksheet.getCell(`A${row}`).alignment = { horizontal: 'center' };
+      row += 2;
+
+      // Résumé exécutif
+      worksheet.getCell(`A${row}`).value = 'RÉSUMÉ EXÉCUTIF';
+      worksheet.getCell(`A${row}`).font = { bold: true, size: 11 };
+      row++;
+
+      worksheet.getCell(`A${row}`).value = 'Total Recettes';
+      worksheet.getCell(`B${row}`).value = totalRecettes;
+      worksheet.getCell(`B${row}`).numFmt = '#,##0';
+      row++;
+
+      worksheet.getCell(`A${row}`).value = 'Total Dépenses';
+      worksheet.getCell(`B${row}`).value = totalDepenses;
+      worksheet.getCell(`B${row}`).numFmt = '#,##0';
+      row++;
+
+      worksheet.getCell(`A${row}`).value = `TVA (${(tauxTVA * 100).toFixed(0)}%)`;
+      worksheet.getCell(`B${row}`).value = montantTVA;
+      worksheet.getCell(`B${row}`).numFmt = '#,##0';
+      row++;
+
+      worksheet.getCell(`A${row}`).value = `Impôt Sociétés (${(tauxIS * 100).toFixed(0)}%)`;
+      worksheet.getCell(`B${row}`).value = montantIS;
+      worksheet.getCell(`B${row}`).numFmt = '#,##0';
+      row++;
+
+      worksheet.getCell(`A${row}`).value = 'Solde Net (après TVA + IS)';
+      worksheet.getCell(`B${row}`).value = soldeNet;
+      worksheet.getCell(`B${row}`).numFmt = '#,##0';
+      worksheet.getCell(`B${row}`).font = { bold: true };
+      row += 2;
+
+      // Détail par filiale
+      worksheet.getCell(`A${row}`).value = 'DÉTAILS PAR FILIALE';
+      worksheet.getCell(`A${row}`).font = { bold: true, size: 11 };
+      row++;
+
+      worksheet.getCell(`A${row}`).value = 'Filiale';
+      worksheet.getCell(`B${row}`).value = 'Domaine';
+      worksheet.getCell(`C${row}`).value = 'Recettes';
+      worksheet.getCell(`D${row}`).value = 'Dépenses';
+      worksheet.getCell(`E${row}`).value = 'Solde';
+      worksheet.getRow(row).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFC41E3A' } };
+      worksheet.getRow(row).font = { bold: true, color: { argb: 'FFFFFFFF' } };
+      row++;
+
+      filiales.forEach(filiale => {
+        const fRec = recettes.filter(r => r.filiale_id === filiale.id).reduce((sum, r) => sum + (r.montant || 0), 0);
+        const fDep = depenses.filter(d => d.filiale_id === filiale.id).reduce((sum, d) => sum + (d.montant || 0), 0);
+        const fSolde = fRec - fDep;
+
+        worksheet.getCell(`A${row}`).value = filiale.nom || 'N/A';
+        worksheet.getCell(`B${row}`).value = filiale.domaines_activite?.nom || 'N/A';
+        worksheet.getCell(`C${row}`).value = fRec;
+        worksheet.getCell(`C${row}`).numFmt = '#,##0';
+        worksheet.getCell(`D${row}`).value = fDep;
+        worksheet.getCell(`D${row}`).numFmt = '#,##0';
+        worksheet.getCell(`E${row}`).value = fSolde;
+        worksheet.getCell(`E${row}`).numFmt = '#,##0';
+        row++;
+      });
+
+      worksheet.columns = [
+        { width: 30 },
+        { width: 22 },
+        { width: 18 },
+        { width: 18 },
+        { width: 18 }
+      ];
+
+      res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+      res.setHeader('Content-Disposition', 'attachment; filename="rapport-complet.xlsx"');
+
+      await workbook.xlsx.write(res);
+      res.end();
+    } catch (err) {
+      console.error('❌ Erreur complet-excel:', err.message);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   // ========== EXCEL - FILIALES ==========
   app.get('/api/rapports/filiales-excel', async (req, res) => {
     try {
       const { domaineId } = req.query;
 
-      const { data: parametres } = await supabase
-        .from('parametres')
-        .select('*')
-        .eq('id', 1)
-        .single();
-
-      const smi = parametres || { nomEntreprise: '...', adresse: '...', email: '...' };
+      const smi = await getParametres(supabase);
 
       let query = supabase.from('filiales').select('*, domaines_activite(nom)');
       if (domaineId) query = query.eq('domaine_id', domaineId);
@@ -369,14 +499,14 @@ export function registerExcelRoutes(app, supabase, formatMontantPDF) {
 
       let row = 1;
 
-      worksheet.mergeCells(`A${row}:D${row}`);
+      worksheet.mergeCells(`A${row}:H${row}`);
       worksheet.getCell(`A${row}`).value = smi.nomEntreprise;
       worksheet.getCell(`A${row}`).font = { bold: true, size: 12 };
       worksheet.getCell(`A${row}`).alignment = { horizontal: 'center' };
       row++;
 
-      worksheet.mergeCells(`A${row}:D${row}`);
-      worksheet.getCell(`A${row}`).value = `${smi.adresse} | ${smi.email}`;
+      worksheet.mergeCells(`A${row}:H${row}`);
+      worksheet.getCell(`A${row}`).value = `${smi.adresse} | ${smi.email} | ${smi.telephone}`;
       worksheet.getCell(`A${row}`).font = { size: 10 };
       worksheet.getCell(`A${row}`).alignment = { horizontal: 'center' };
       row += 2;
@@ -386,14 +516,15 @@ export function registerExcelRoutes(app, supabase, formatMontantPDF) {
         { header: 'Nom', key: 'nom', width: 30 },
         { header: 'Domaine', key: 'domaine', width: 20 },
         { header: 'Ville', key: 'ville', width: 15 },
-        { header: 'Telephone', key: 'telephone', width: 15 },
+        { header: 'Téléphone', key: 'telephone', width: 15 },
         { header: 'Email', key: 'email', width: 25 },
-        { header: 'Gerants', key: 'gerants', width: 40 },
+        { header: 'Gérants', key: 'gerants', width: 40 },
         { header: 'Statut', key: 'statut', width: 12 }
       ];
 
-      worksheet.getRow(1).font = { bold: true, color: { argb: 'FFFFFFFF' } };
-      worksheet.getRow(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFC41E3A' } };
+      worksheet.getRow(row).font = { bold: true, color: { argb: 'FFFFFFFF' } };
+      worksheet.getRow(row).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFC41E3A' } };
+      row++;
 
       if (filialesAvecGerants && filialesAvecGerants.length > 0) {
         filialesAvecGerants.forEach(filiale => {
@@ -428,18 +559,12 @@ export function registerExcelRoutes(app, supabase, formatMontantPDF) {
   // ========== EXCEL - GÉRANTS ==========
   app.get('/api/rapports/gerants-excel', async (req, res) => {
     try {
+      const smi = await getParametres(supabase);
+
       const [filialesRes, gerantsRes] = await Promise.all([
         supabase.from('filiales').select('*').order('nom'),
         supabase.from('gerants').select('*').order('filiale_id')
       ]);
-
-      const { data: parametres } = await supabase
-        .from('parametres')
-        .select('*')
-        .eq('id', 1)
-        .single();
-
-      const smi = parametres || { nomEntreprise: '...', adresse: '...', email: '...' };
 
       const filiales = filialesRes.data || [];
       const gerants = gerantsRes.data || [];
@@ -449,14 +574,14 @@ export function registerExcelRoutes(app, supabase, formatMontantPDF) {
 
       let row = 1;
 
-      worksheet.mergeCells(`A${row}:D${row}`);
+      worksheet.mergeCells(`A${row}:G${row}`);
       worksheet.getCell(`A${row}`).value = smi.nomEntreprise;
       worksheet.getCell(`A${row}`).font = { bold: true, size: 12 };
       worksheet.getCell(`A${row}`).alignment = { horizontal: 'center' };
       row++;
 
-      worksheet.mergeCells(`A${row}:D${row}`);
-      worksheet.getCell(`A${row}`).value = `${smi.adresse} | ${smi.email}`;
+      worksheet.mergeCells(`A${row}:G${row}`);
+      worksheet.getCell(`A${row}`).value = `${smi.adresse} | ${smi.email} | ${smi.telephone}`;
       worksheet.getCell(`A${row}`).font = { size: 10 };
       worksheet.getCell(`A${row}`).alignment = { horizontal: 'center' };
       row += 2;
@@ -466,18 +591,17 @@ export function registerExcelRoutes(app, supabase, formatMontantPDF) {
         { header: 'Nom Complet', key: 'nomComplet', width: 25 },
         { header: 'Poste', key: 'poste', width: 20 },
         { header: 'Email', key: 'email', width: 25 },
-        { header: 'Telephone', key: 'telephone', width: 15 },
+        { header: 'Téléphone', key: 'telephone', width: 15 },
         { header: 'Date Embauche', key: 'dateEmbauche', width: 15 },
         { header: 'Statut', key: 'statut', width: 12 }
       ];
 
-      worksheet.getRow(1).font = { bold: true, color: { argb: 'FFFFFFFF' } };
-      worksheet.getRow(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFC41E3A' } };
+      worksheet.getRow(row).font = { bold: true, color: { argb: 'FFFFFFFF' } };
+      worksheet.getRow(row).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFC41E3A' } };
+      row++;
 
-      let rowNum = 2;
       filiales.forEach((filiale) => {
         const filialeGerants = gerants.filter(g => g.filiale_id === filiale.id);
-
         if (filialeGerants.length === 0) return;
 
         filialeGerants.forEach((gerant) => {
@@ -490,7 +614,6 @@ export function registerExcelRoutes(app, supabase, formatMontantPDF) {
             dateEmbauche: gerant.date_embauche ? new Date(gerant.date_embauche).toLocaleDateString('fr-FR') : 'N/A',
             statut: gerant.statut || 'Active'
           });
-          rowNum++;
         });
       });
 

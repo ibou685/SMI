@@ -1,42 +1,54 @@
-// backend/src/middleware/auth.js
+// backend/src/middleware/auth.js - VERSION CORRIGÉE
 
+import jwt from 'jsonwebtoken';
 
+const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-in-production';
+
+// ✅ Middleware pour vérifier le token JWT
 export const verifyAuth = async (req, res, next) => {
   try {
-    // Récupérer le token du header Authorization
     const authHeader = req.headers.authorization;
-    
+
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      return res.status(401).json({ error: 'Unauthorized - No token provided' });
+      return res.status(401).json({ error: 'Non authentifié - Token manquant' });
     }
 
-    const token = authHeader.substring(7); // Enlever "Bearer "
+    const token = authHeader.substring(7);
 
-   
+    // ✅ Vérifier le token (la ligne qui manquait !)
+    const decoded = jwt.verify(token, JWT_SECRET);
 
-    // Ajouter les infos utilisateur à la requête
     req.auth = {
-      userId: decoded.sub,
+      userId: decoded.userId,
       email: decoded.email,
-      role: decoded.org_role || 'user'
+      nom: decoded.nom,
+      role: decoded.role
     };
 
     next();
   } catch (err) {
-    console.error('Auth error:', err.message);
-    return res.status(401).json({ error: 'Unauthorized - Invalid token' });
+    console.error('❌ Auth error:', err.message);
+
+    if (err.name === 'TokenExpiredError') {
+      return res.status(401).json({ error: 'Token expiré' });
+    }
+    if (err.name === 'JsonWebTokenError') {
+      return res.status(401).json({ error: 'Token invalide' });
+    }
+
+    return res.status(401).json({ error: 'Non authentifié' });
   }
 };
 
-// Middleware optionnel pour vérifier un rôle spécifique
+// ✅ Middleware optionnel pour vérifier un rôle spécifique
 export const requireRole = (allowedRoles) => {
   return (req, res, next) => {
     if (!req.auth) {
-      return res.status(401).json({ error: 'Unauthorized' });
+      return res.status(401).json({ error: 'Non authentifié' });
     }
 
     if (!allowedRoles.includes(req.auth.role)) {
-      return res.status(403).json({ error: 'Forbidden - Insufficient permissions' });
+      return res.status(403).json({ error: 'Accès refusé - Permissions insuffisantes' });
     }
 
     next();

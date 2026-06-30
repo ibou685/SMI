@@ -11,6 +11,8 @@ import PDFDocument from 'pdfkit';
 import ExcelJS from 'exceljs';
 import rateLimit from 'express-rate-limit';
 import schedule from 'node-schedule';
+import { registerAuthRoutes } from './routes-auth.js';
+import { verifyAuth } from './middleware/auth.js';
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -29,16 +31,31 @@ const supabase = createClient(
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
+// ✅ CORS configurable via env (plus facile à maintenir)
+const allowedOrigins = process.env.ALLOWED_ORIGINS
+  ? process.env.ALLOWED_ORIGINS.split(',').map(s => s.trim())
+  : [
+      'http://localhost:5173',
+      'http://localhost:3000',
+      'https://smi-gamma.vercel.app'  // ← Vérifiez votre vraie URL Vercel !
+    ];
+
 const corsOptions = {
-  origin: [
-    'http://localhost:5173',
-    'http://localhost:3000',
-    'https://smi-gamma.vercel.app'  // ✅ AJOUTE CETTE LIGNE
-  ],
+  origin: (origin, callback) => {
+    // Autoriser les requêtes sans origin (curl, postman, même origine)
+    if (!origin || allowedOrigins.includes(origin)) {
+      callback(null, true);
+    } else {
+      console.warn(`⚠️ CORS bloqué pour: ${origin}`);
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization'],
 };
+
+app.use(cors(corsOptions));
 
 app.use(cors(corsOptions));
 app.use(helmet());
@@ -64,6 +81,12 @@ const formatMontantPDF = (n) => {
   const formatted = str.replace(/\B(?=(\d{3})+(?!\d))/g, ' ');
   return formatted + ' FCFA';
 };
+
+// ============================================
+// ROUTES AUTH (publiques - login/register)
+// ============================================
+registerAuthRoutes(app, supabase);
+console.log('✅ Routes auth chargées');
 
 // ============================================
 // ROUTES PUBLIQUES
@@ -119,13 +142,15 @@ app.get('/api/filiales', async (req, res) => {
 
 app.get('/api/filiales/with-details', async (req, res) => {
   try {
+    // ✅ Jointure avec domaines_activite via la FK domaine_id
     const { data: filiales, error: err1 } = await supabase
       .from('filiales')
-      .select('*')
+      .select('*, domaines_activite(*)')
       .order('nom');
-    
+
     if (err1) throw err1;
-    
+
+    // ✅ Récupérer les gérants en parallèle (plus rapide)
     const filialesAvecGerants = await Promise.all(
       (filiales || []).map(async (filiale) => {
         const { data: gerants } = await supabase
@@ -135,9 +160,10 @@ app.get('/api/filiales/with-details', async (req, res) => {
         return { ...filiale, gerants: gerants || [] };
       })
     );
-    
+
     res.json(filialesAvecGerants);
   } catch (err) {
+    console.error('Erreur /filiales/with-details:', err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -171,7 +197,74 @@ app.get('/api/alertes/stream', (req, res) => {
   });
 });
 
-app.post('/api/filiales', async (req, res) => {
+// ============================================
+// CRON JOB - VÉRIFICATION AUTOMATIQUE DES RETARDS
+// ============================================
+// Tous les jours à 8h00 du matin
+schedule.scheduleJob('0 8 * * *', async () => {
+  console.log('\n⏰ [CRON] Vérification automatique des retards de versement...');
+  try {
+    const { data: params } = await supabase
+      .from('parametres')
+      .select('joursretardpaiement')
+      .maybeSingle();
+
+    const joursRetard = params?.joursretardpaiement || 1;
+    const dateLimit = new Date();
+    dateLimit.setDate(dateLimit.getDate() - joursRetard);
+    const dateLimitISO = dateLimit.toISOString().split('T')[0];
+
+    const { data: retardedRecettes } = await supabase
+      .from('recettes')
+      .select('id, filiale_id, montant, date_versement')
+      .lt('date_versement', dateLimitISO);
+
+    let alertesCreees = 0;
+    for (const recette of (retardedRecettes || [])) {
+      const { data: existingAlert } = await supabase
+        .from('alertes')
+        .select('id')
+        .eq('description', `Versement en retard depuis ${joursRetard} jours - ID: ${recette.id}`)
+        .maybeSingle();
+
+      if (!existingAlert) {
+        const { data: filiale } = await supabase
+          .from('filiales')
+          .select('nom')
+          .eq('id', recette.filiale_id)
+          .maybeSingle();
+
+        const filialeName = filiale?.nom || 'Filiale inconnue';
+
+        await supabase.from('alertes').insert({
+          titre: `Retard de versement - ${filialeName}`,
+          description: `Versement en retard depuis ${joursRetard} jours - ID: ${recette.id}`,
+          type: 'Retard paiement',
+          statut: 'Active',
+        });
+
+        // Broadcaster aux clients SSE connectés
+        alerteClients.forEach(client => {
+          client.write(`data: ${JSON.stringify({
+            type: 'new_alerte',
+            titre: `Retard de versement - ${filialeName}`,
+            description: `Versement en retard depuis ${joursRetard} jours (${recette.montant} FCFA)`,
+            type_alerte: 'Retard paiement'
+          })}\n\n`);
+        });
+
+        alertesCreees++;
+      }
+    }
+    console.log(`✅ [CRON] ${alertesCreees} nouvelle(s) alerte(s) créée(s)`);
+  } catch (err) {
+    console.error('❌ [CRON] Erreur:', err.message);
+  }
+});
+
+console.log('✅ Cron job "vérification retards" programmé (08h00 chaque jour)');
+
+app.post('/api/filiales', verifyAuth, async (req, res) => {
   try {
     const { code, nom, adresse, ville, region, latitude, longitude, telephone, email, statut = 'Active' } = req.body;
 
@@ -189,7 +282,7 @@ app.post('/api/filiales', async (req, res) => {
   }
 });
 
-app.put('/api/filiales/:id', async (req, res) => {
+app.put('/api/filiales/:id', verifyAuth, async (req, res) => {
   try {
     const { id } = req.params;
     const { data, error } = await supabase
@@ -205,7 +298,7 @@ app.put('/api/filiales/:id', async (req, res) => {
   }
 });
 
-app.delete('/api/filiales/:id', async (req, res) => {
+app.delete('/api/filiales/:id', verifyAuth,async (req, res) => {
   try {
     const { id } = req.params;
     const { error } = await supabase.from('filiales').delete().eq('id', id);
@@ -220,7 +313,7 @@ app.delete('/api/filiales/:id', async (req, res) => {
 // ROUTES FILIALES - WITH GERANTS
 // ============================================
 
-app.post('/api/filiales/with-gerants', async (req, res) => {
+app.post('/api/filiales/with-gerants', verifyAuth, async (req, res) => {
   try {
     const { code, nom, adresse, ville, region, latitude, longitude, telephone, email, domaine_id, activite_principale, statut = 'Active', gerants = [] } = req.body;
 
@@ -261,7 +354,7 @@ app.post('/api/filiales/with-gerants', async (req, res) => {
   }
 }); 
 
-app.put('/api/filiales/:id/complete', async (req, res) => {
+app.put('/api/filiales/:id/complete', verifyAuth, async (req, res) => {
   try {
     const { id } = req.params;
     const { code, nom, adresse, ville, region, latitude, longitude, telephone, email, domaine_id, activite_principale, statut, gerants = [] } = req.body;
@@ -320,7 +413,7 @@ app.get('/api/domaines', async (req, res) => {
   }
 });
 
-app.post('/api/domaines', async (req, res) => {
+app.post('/api/domaines', verifyAuth, async (req, res) => {
   try {
     const { nom, code, description, statut = 'Active' } = req.body;
     if (!nom) return res.status(400).json({ error: 'nom requis' });
@@ -336,7 +429,7 @@ app.post('/api/domaines', async (req, res) => {
   }
 });
 
-app.put('/api/domaines/:id', async (req, res) => {
+app.put('/api/domaines/:id', verifyAuth, async (req, res) => {
   try {
     const { id } = req.params;
     const { data, error } = await supabase
@@ -352,7 +445,7 @@ app.put('/api/domaines/:id', async (req, res) => {
   }
 });
 
-app.delete('/api/domaines/:id', async (req, res) => {
+app.delete('/api/domaines/:id', verifyAuth, async (req, res) => {
   try {
     const { id } = req.params;
     const { error } = await supabase.from('domaines_activite').delete().eq('id', id);
@@ -385,7 +478,7 @@ app.get('/api/recettes', async (req, res) => {
   }
 });
 
-app.post('/api/recettes', async (req, res) => {
+app.post('/api/recettes', verifyAuth, async (req, res) => {
   try {
     const { filiale_id, montant, date_versement } = req.body;
 
@@ -407,7 +500,7 @@ app.post('/api/recettes', async (req, res) => {
   }
 });
 
-app.put('/api/recettes/:id', async (req, res) => {
+app.put('/api/recettes/:id', verifyAuth, async (req, res) => {
   try {
     const { id } = req.params;
     const { data, error } = await supabase
@@ -423,7 +516,7 @@ app.put('/api/recettes/:id', async (req, res) => {
   }
 });
 
-app.delete('/api/recettes/:id', async (req, res) => {
+app.delete('/api/recettes/:id', verifyAuth, async (req, res) => {
   try {
     const { id } = req.params;
     const { error } = await supabase.from('recettes').delete().eq('id', id);
@@ -453,7 +546,7 @@ app.get('/api/depenses', async (req, res) => {
   }
 });
 
-app.post('/api/depenses', async (req, res) => {
+app.post('/api/depenses', verifyAuth, async (req, res) => {
   try {
     const { montant, categorie, description, date_depense } = req.body;
 
@@ -474,7 +567,7 @@ app.post('/api/depenses', async (req, res) => {
     const { data: params } = await supabase
       .from('parametres')
       .select('montantlimitedépense')
-      .single();
+      .maybeSingle();  // ✅ maybeSingle au lieu de single
 
     const seuilAlerte = params?.montantlimitedépense || 50000000;
 
@@ -490,7 +583,6 @@ app.post('/api/depenses', async (req, res) => {
         description: `Dépense de ${montant} FCFA (${categorie}) dépasse le seuil de ${seuilAlerte} FCFA`,
         type: 'Dépense inhabituelle',
         statut: 'Active',
-        created_by: 'system'
       });
       
       // ✅ BROADCASTER L'ALERTE AUX CLIENTS SSE
@@ -510,7 +602,7 @@ alerteClients.forEach(client => {
   }
 });
 
-app.put('/api/depenses/:id', async (req, res) => {
+app.put('/api/depenses/:id', verifyAuth, async (req, res) => {
   try {
     const { id } = req.params;
     const { data, error } = await supabase
@@ -526,7 +618,7 @@ app.put('/api/depenses/:id', async (req, res) => {
   }
 });
 
-app.delete('/api/depenses/:id', async (req, res) => {
+app.delete('/api/depenses/:id', verifyAuth, async (req, res) => {
   try {
     const { id } = req.params;
     const { error } = await supabase.from('depenses').delete().eq('id', id);
@@ -554,7 +646,7 @@ app.get('/api/alertes', async (req, res) => {
   }
 });
 
-app.post('/api/alertes', async (req, res) => {
+app.post('/api/alertes', verifyAuth, async (req, res) => {
   try {
     const { titre, description, type, statut = 'Active' } = req.body;
     if (!titre || !type) return res.status(400).json({ error: 'titre et type requis' });
@@ -566,7 +658,7 @@ app.post('/api/alertes', async (req, res) => {
   }
 });
 
-app.put('/api/alertes/:id', async (req, res) => {
+app.put('/api/alertes/:id', verifyAuth, async (req, res) => {
   try {
     const { id } = req.params;
     const { data, error } = await supabase.from('alertes').update(req.body).eq('id', id).select().single();
@@ -577,38 +669,145 @@ app.put('/api/alertes/:id', async (req, res) => {
   }
 });
 
-app.post('/api/alertes/verifier', async (req, res) => {
+// ============================================
+// ROUTES ALERTES - VÉRIFICATION (CORRIGÉ)
+// ============================================
+
+app.post('/api/alertes/verifier', verifyAuth, async (req, res) => {
   try {
-    console.log(`\n📲 Vérification manuelle des alertes`);
-    
-    res.json({ 
-      message: 'Vérification complétée', 
-      timestamp: new Date().toLocaleString('fr-FR') 
+    console.log('\n📲 [MANUEL] Vérification des retards de versement...');
+
+    const { data: params, error: paramError } = await supabase
+      .from('parametres')
+      .select('joursretardpaiement')
+      .maybeSingle();
+
+    if (paramError) throw paramError;
+
+    const joursRetard = params?.joursretardpaiement || 1;
+
+    const dateLimit = new Date();
+    dateLimit.setDate(dateLimit.getDate() - joursRetard);
+    const dateLimitISO = dateLimit.toISOString().split('T')[0];
+
+    const { data: retardedRecettes, error: recetteError } = await supabase
+      .from('recettes')
+      .select('id, filiale_id, montant, date_versement')
+      .lt('date_versement', dateLimitISO);
+
+    if (recetteError) throw recetteError;
+
+    console.log(`📊 ${retardedRecettes?.length || 0} versements en retard trouvés`);
+
+    let alertesCreees = 0;
+    let alertesDejaExistantes = 0;
+
+  for (const recette of (retardedRecettes || [])) {
+  // ✅ 1. Calculer le VRAI nombre de jours de retard
+  const dateVersement = new Date(recette.date_versement);
+  const aujourdhui = new Date();
+  aujourdhui.setHours(0, 0, 0, 0);
+  dateVersement.setHours(0, 0, 0, 0);
+  const diffTime = aujourdhui - dateVersement;
+  const vraiJoursRetard = Math.floor(diffTime / (1000 * 60 * 60 * 24));
+
+  // ✅ 2. Vérifier si une alerte existe déjà pour cette filiale
+  const { data: existingAlert } = await supabase
+    .from('alertes')
+    .select('id, description')
+    .eq('filiale_id', recette.filiale_id)
+    .eq('type', 'Retard paiement')
+    .eq('statut', 'Active')
+    .maybeSingle();
+
+  const { data: filiale } = await supabase
+    .from('filiales')
+    .select('nom')
+    .eq('id', recette.filiale_id)
+    .maybeSingle();
+
+  const filialeName = filiale?.nom || 'Filiale inconnue';
+  const jourTexte = vraiJoursRetard === 1 ? 'jour' : 'jours';
+  const descriptionPropre = `Versement de ${recette.montant} FCFA en retard depuis ${vraiJoursRetard} ${jourTexte}`;
+
+  // ✅ 3. Si l'alerte existe déjà → LA METTRE À JOUR (ne pas skip !)
+  if (existingAlert) {
+    // Mettre à jour la description avec le nouveau nombre de jours
+    const { error: updateError } = await supabase
+      .from('alertes')
+      .update({ description: descriptionPropre })
+      .eq('id', existingAlert.id);
+
+    if (updateError) {
+      console.error('❌ Erreur update alerte:', updateError);
+    } else {
+      console.log(`🔄 Alerte mise à jour pour ${filialeName} (${vraiJoursRetard}j de retard)`);
+    }
+    alertesDejaExistantes++;
+    continue;  // Pas de nouvel insert, mais on a mis à jour
+  }
+
+  // ✅ 4. Sinon → Créer une nouvelle alerte
+  const { error: insertError } = await supabase.from('alertes').insert({
+    titre: `Retard de versement - ${filialeName}`,
+    description: descriptionPropre,
+    type: 'Retard paiement',
+    statut: 'Active',
+    filiale_id: recette.filiale_id
+  });
+
+  if (insertError) {
+    console.error('❌ Erreur insert alerte:', insertError);
+    continue;
+  }
+
+  // ✅ 5. Broadcaster seulement les NOUVELLES alertes
+  alerteClients.forEach(client => {
+    client.write(`data: ${JSON.stringify({
+      type: 'new_alerte',
+      titre: `Retard de versement - ${filialeName}`,
+      description: descriptionPropre,
+      type_alerte: 'Retard paiement'
+    })}\n\n`);
+  });
+
+  alertesCreees++;
+  console.log(`✅ Alerte créée pour ${filialeName} (${recette.montant} FCFA, ${vraiJoursRetard}j de retard)`);
+}
+
+    console.log(`✅ [MANUEL] ${alertesCreees} nouvelle(s) alerte(s) créée(s), ${alertesDejaExistantes} déjà existantes`);
+
+    res.json({
+      message: 'Vérification complétée',
+      joursRetard,
+      retardsDetectes: (retardedRecettes || []).length,
+      alertesCreees,
+      alertesDejaExistantes,
+      timestamp: new Date().toLocaleString('fr-FR')
     });
   } catch (err) {
+    console.error('❌ Erreur vérification:', err);
     res.status(500).json({ error: err.message });
   }
 });
 
 // ============================================
-// ROUTES ALERTES - CHECK DELAYS (DYNAMIQUE)
+// ROUTES ALERTES - CHECK DELAYS (CORRIGÉ)
 // ============================================
 
-app.post('/api/alertes/check-delays', async (req, res) => {
+app.post('/api/alertes/check-delays', verifyAuth, async (req, res) => {
   try {
-    console.log('\n🔍 Vérification des retards de versement...');
+    console.log('\n🔍 [CHECK-DELAYS] Vérification des retards de versement...');
 
     const { data: params, error: paramError } = await supabase
       .from('parametres')
       .select('joursretardpaiement')
-      .single();
+      .maybeSingle();
 
-    if (paramError || !params) {
-      return res.status(400).json({ error: 'Paramètres non trouvés' });
-    }
+    if (paramError) throw paramError;
 
-    const joursRetard = params.joursretardpaiement || 1;
-    console.log(`📅 Seuil de retard: ${joursRetard} jours`);
+    const joursRetard = params?.joursretardpaiement || 1;
+    console.log(`📅 Seuil de retard: ${joursRetard} jour(s)`);
 
     const dateLimit = new Date();
     dateLimit.setDate(dateLimit.getDate() - joursRetard);
@@ -623,56 +822,93 @@ app.post('/api/alertes/check-delays', async (req, res) => {
 
     if (recetteError) throw recetteError;
 
-    console.log(`📨 Trouvé ${(retardedRecettes || []).length} versements en retard`);
+    console.log(`📨 Trouvé ${(retardedRecettes || []).length} versement(s) en retard`);
 
     let alertesCreees = 0;
+    let alertesDejaExistantes = 0;
 
-    for (const recette of retardedRecettes || []) {
-      const { data: existingAlert } = await supabase
-        .from('alertes')
-        .select('id')
-        .eq('description', `Versement en retard depuis ${joursRetard} jours - ID: ${recette.id}`)
-        .single();
+    for (const recette of (retardedRecettes || [])) {
+  // ✅ 1. Calculer le VRAI nombre de jours de retard
+  const dateVersement = new Date(recette.date_versement);
+  const aujourdhui = new Date();
+  aujourdhui.setHours(0, 0, 0, 0);
+  dateVersement.setHours(0, 0, 0, 0);
+  const diffTime = aujourdhui - dateVersement;
+  const vraiJoursRetard = Math.floor(diffTime / (1000 * 60 * 60 * 24));
 
-      if (!existingAlert) {
-        const { data: filiale } = await supabase
-          .from('filiales')
-          .select('nom')
-          .eq('id', recette.filiale_id)
-          .single();
+  // ✅ 2. Vérifier si une alerte existe déjà pour cette filiale
+  const { data: existingAlert } = await supabase
+    .from('alertes')
+    .select('id, description')
+    .eq('filiale_id', recette.filiale_id)
+    .eq('type', 'Retard paiement')
+    .eq('statut', 'Active')
+    .maybeSingle();
 
-        const filialeName = filiale?.nom || 'Filiale inconnue';
+  const { data: filiale } = await supabase
+    .from('filiales')
+    .select('nom')
+    .eq('id', recette.filiale_id)
+    .maybeSingle();
 
-        await supabase.from('alertes').insert({
-          titre: `Retard de versement - ${filialeName}`,
-          description: `Versement en retard depuis ${joursRetard} jours - ID: ${recette.id}`,
-          type: 'Retard paiement',
-          statut: 'Active',
-          created_by: 'system'
-        });
+  const filialeName = filiale?.nom || 'Filiale inconnue';
+  const jourTexte = vraiJoursRetard === 1 ? 'jour' : 'jours';
+  const descriptionPropre = `Versement de ${recette.montant} FCFA en retard depuis ${vraiJoursRetard} ${jourTexte}`;
 
-        // ✅ BROADCASTER L'ALERTE AUX CLIENTS SSE
-      alerteClients.forEach(client => {
-        client.write(`data: ${JSON.stringify({ 
-          type: 'new_alerte', 
-          titre: `Retard de versement - ${filialeName}`,
-          description: `Versement en retard depuis ${joursRetard} jours`,
-          type_alerte: 'Retard paiement'
-        })}\n\n`);
-      });
+  // ✅ 3. Si l'alerte existe déjà → LA METTRE À JOUR (ne pas skip !)
+  if (existingAlert) {
+    // Mettre à jour la description avec le nouveau nombre de jours
+    const { error: updateError } = await supabase
+      .from('alertes')
+      .update({ description: descriptionPropre })
+      .eq('id', existingAlert.id);
 
-        alertesCreees++;
-        console.log(`✅ Alerte créée pour versement ${recette.id} (${recette.montant} FCFA)`);
-      }
+    if (updateError) {
+      console.error('❌ Erreur update alerte:', updateError);
+    } else {
+      console.log(`🔄 Alerte mise à jour pour ${filialeName} (${vraiJoursRetard}j de retard)`);
     }
+    alertesDejaExistantes++;
+    continue;  // Pas de nouvel insert, mais on a mis à jour
+  }
 
-    console.log(`\n✅ ${alertesCreees} alerte(s) de retard créée(s)\n`);
+  // ✅ 4. Sinon → Créer une nouvelle alerte
+  const { error: insertError } = await supabase.from('alertes').insert({
+    titre: `Retard de versement - ${filialeName}`,
+    description: descriptionPropre,
+    type: 'Retard paiement',
+    statut: 'Active',
+    filiale_id: recette.filiale_id
+  });
+
+  if (insertError) {
+    console.error('❌ Erreur insert alerte:', insertError);
+    continue;
+  }
+
+  // ✅ 5. Broadcaster seulement les NOUVELLES alertes
+  alerteClients.forEach(client => {
+    client.write(`data: ${JSON.stringify({
+      type: 'new_alerte',
+      titre: `Retard de versement - ${filialeName}`,
+      description: descriptionPropre,
+      type_alerte: 'Retard paiement'
+    })}\n\n`);
+  });
+
+  alertesCreees++;
+  console.log(`✅ Alerte créée pour ${filialeName} (${recette.montant} FCFA, ${vraiJoursRetard}j de retard)`);
+}
+
+
+    console.log(`\n✅ [CHECK-DELAYS] ${alertesCreees} nouvelle(s) alerte(s) créée(s), ${alertesDejaExistantes} déjà existante(s)\n`);
 
     res.json({
       message: 'Vérification complétée',
       joursRetard,
       retardsDetectes: (retardedRecettes || []).length,
       alertesCreees,
+      alertesDejaExistantes,
       timestamp: new Date().toLocaleString('fr-FR')
     });
   } catch (err) {
@@ -695,7 +931,7 @@ app.get('/api/gerants', async (req, res) => {
   }
 });
 
-app.post('/api/gerants', async (req, res) => {
+app.post('/api/gerants', verifyAuth, async (req, res) => {
   try {
     const { filiale_id, nom, prenom, email, telephone, poste, date_embauche, statut = 'Active' } = req.body;
     if (!filiale_id || !nom || !prenom) return res.status(400).json({ error: 'filiale_id, nom et prenom requis' });
@@ -707,7 +943,7 @@ app.post('/api/gerants', async (req, res) => {
   }
 });
 
-app.put('/api/gerants/:id', async (req, res) => {
+app.put('/api/gerants/:id', verifyAuth, async (req, res) => {
   try {
     const { id } = req.params;
     const { data, error } = await supabase.from('gerants').update(req.body).eq('id', id).select().single();
@@ -718,7 +954,7 @@ app.put('/api/gerants/:id', async (req, res) => {
   }
 });
 
-app.delete('/api/gerants/:id', async (req, res) => {
+app.delete('/api/gerants/:id', verifyAuth, async (req, res) => {
   try {
     const { id } = req.params;
     const { error } = await supabase.from('gerants').delete().eq('id', id);
@@ -733,20 +969,67 @@ app.delete('/api/gerants/:id', async (req, res) => {
 // ROUTES PARAMÈTRES
 // ============================================
 
+// ============================================
+// ROUTES PARAMÈTRES (CORRIGÉ)
+// ============================================
+
 app.get('/api/parametres', async (req, res) => {
   try {
-    const { data } = await supabase.from('parametres').select('*').eq('id', 1).single();
-    res.json(data);
+    const { data, error } = await supabase
+      .from('parametres')
+      .select('*')
+      .eq('id', 1)
+      .maybeSingle();
+
+    if (error) {
+      console.error('Erreur GET parametres:', error);
+      return res.status(500).json({ error: error.message });
+    }
+
+    res.json(data || {});
   } catch (err) {
+    console.error('Erreur GET parametres:', err);
     res.status(500).json({ error: err.message });
   }
 });
 
-app.post('/api/parametres', async (req, res) => {
+app.post('/api/parametres', verifyAuth, async (req, res) => {
   try {
-    const { data } = await supabase.from('parametres').update(req.body).eq('id', 1).select().single();
+    console.log('📥 Données reçues dans POST /parametres:', req.body);
+
+    const { data: existing } = await supabase
+      .from('parametres')
+      .select('id')
+      .eq('id', 1)
+      .maybeSingle();
+
+    let data;
+    let error;
+
+    if (existing) {
+      ({ data, error } = await supabase
+        .from('parametres')
+        .update({ ...req.body, updated_at: new Date().toISOString() })
+        .eq('id', 1)
+        .select()
+        .single());
+    } else {
+      ({ data, error } = await supabase
+        .from('parametres')
+        .insert([{ id: 1, ...req.body }])
+        .select()
+        .single());
+    }
+
+    if (error) {
+      console.error('❌ Erreur sauvegarde paramètres:', error);
+      return res.status(500).json({ error: error.message });
+    }
+
+    console.log('✅ Paramètres sauvegardés:', data);
     res.json({ message: 'Paramètres sauvegardés', data });
   } catch (err) {
+    console.error('❌ Erreur POST parametres:', err);
     res.status(500).json({ error: err.message });
   }
 });
