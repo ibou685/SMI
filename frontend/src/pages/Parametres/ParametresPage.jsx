@@ -1,15 +1,23 @@
-// frontend/src/pages/Parametres/ParametresPage.jsx
+// frontend/src/pages/Parametres/ParametresPage.jsx - VERSION CORRIGÉE
+//
+// Corrections :
+// 1) Plus de variable shadowing entre fetchParametres du contexte et la fonction locale du useEffect
+// 2) Utilise le contexte pour recharger après save
+// 3) Gestion d'erreur plus claire
 
 import { useEffect, useState } from 'react';
 import { axiosInstance } from '../../api/client.js';
 import { useParametres } from '../../contexts/ParametresContext.jsx';
+import { toast } from '../../store/toastStore';
+
 
 export function ParametresPage() {
-  const { fetchParametres } = useParametres();
+  const { parametres, fetchParametres: refreshContext } = useParametres();  // ✅ renommé pour éviter le shadowing
   const [loading, setLoading] = useState(false);
   const [activeTab, setActiveTab] = useState('infos');
+  const [saveSuccess, setSaveSuccess] = useState(false);
 
-  // État initial VIDE - sera rempli par le useEffect
+  // État initial avec valeurs par défaut
   const [formData, setFormData] = useState({
     nomentreprise: '',
     adresse: '',
@@ -34,33 +42,42 @@ export function ParametresPage() {
     annefiscale: new Date().getFullYear()
   });
 
-  // Charger paramètres
+  // Charger paramètres depuis l'API (avec nom local = loadParametres pour éviter le shadowing)
   useEffect(() => {
-    const fetchParametres = async () => {
+    const loadParametres = async () => {
       try {
         const response = await axiosInstance.get('/parametres');
         if (response.data && Object.keys(response.data).length > 0) {
           setFormData(prev => ({ ...prev, ...response.data }));
+          console.log('✅ Paramètres chargés dans le formulaire:', response.data);
         }
       } catch (err) {
-        console.log('Pas de paramètres trouvés');
+        console.log('ℹ️ Pas de paramètres trouvés (premier usage):', err.message);
       }
     };
-    fetchParametres();
+    loadParametres();
   }, []);
 
   // Sauvegarder
   const handleSave = async () => {
     try {
       setLoading(true);
-      await axiosInstance.post('/parametres', formData);
-      alert('✅ Paramètres sauvegardés avec succès!');
-      
-      // ✅ RÉACTUALISER LE CONTEXT
-      await fetchParametres();
-      
+      setSaveSuccess(false);
+      console.log('📤 Sauvegarde des paramètres:', formData);
+
+      const response = await axiosInstance.post('/parametres', formData);
+      console.log('✅ Réponse backend:', response.data);
+
+      toast.success('✅ Paramètres sauvegardés avec succès !');
+
+      // ✅ Recharger le contexte pour que les autres pages voient les changements
+      await refreshContext();
+
+      setSaveSuccess(true);
+      setTimeout(() => setSaveSuccess(false), 3000);
     } catch (err) {
-      alert(`❌ Erreur: ${err.message}`);
+      console.error('❌ Erreur sauvegarde:', err);
+      toast.error(`❌ Erreur: ${err.response?.data?.error || err.message}`);
     } finally {
       setLoading(false);
     }
@@ -81,6 +98,11 @@ export function ParametresPage() {
         <div className="max-w-7xl mx-auto px-6 py-10">
           <h1 className="text-4xl font-bold">⚙️ Paramètres & Configuration</h1>
           <p className="text-red-100 mt-2">Configurez votre application SMI</p>
+          {saveSuccess && (
+            <div className="mt-3 bg-green-500 text-white px-4 py-2 rounded-lg inline-block">
+              ✅ Paramètres mis à jour et répercutés sur tout le logiciel !
+            </div>
+          )}
         </div>
       </div>
 

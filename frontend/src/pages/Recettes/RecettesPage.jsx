@@ -1,10 +1,13 @@
-// frontend/src/pages/Recettes/RecettesPage.jsx
-// Page gestion des recettes - VERSION SIMPLE
+// frontend/src/pages/Recettes/RecettesPage.jsx - VERSION UX COMPLÈTE
 
 import { useEffect, useState } from 'react';
-import { axiosInstance } from '../../api/client'; 
+import { axiosInstance } from '../../api/client';
 import { KPICard } from '../../components/KPICard';
 import { RecetteForm } from './RecetteForm';
+import { toast } from '../../store/toastStore';
+import { Spinner } from '../../components/Spinner';
+import { EmptyState } from '../../components/EmptyState';
+import { ConfirmDialog } from '../../components/ConfirmDialog';
 
 export function RecettesPage() {
   const [recettes, setRecettes] = useState([]);
@@ -14,74 +17,94 @@ export function RecettesPage() {
   const [searchTerm, setSearchTerm] = useState('');
   const [filialeFilter, setFilialeFilter] = useState(null);
   const [stats, setStats] = useState({ total: 0, count: 0, moyenne: 0 });
+  const [confirmDelete, setConfirmDelete] = useState(null);  // ✅ ConfirmDialog
 
-  // Charger les recettes
+  // ✅ Charger recettes + filiales en parallèle
   useEffect(() => {
-    const fetchRecettes = async () => {
+    const fetchAll = async () => {
       try {
         setLoading(true);
-        const response = await axiosInstance.get('/recettes');
-        console.log('Recettes reçues:', response.data);
-        setRecettes(response.data || []);
+        const [recettesRes, filialesRes] = await Promise.all([
+          axiosInstance.get('/recettes'),
+          axiosInstance.get('/filiales')
+        ]);
 
-        // Calculer stats
-        const total = (response.data || []).reduce((sum, r) => sum + r.montant, 0);
-        const count = response.data?.length || 0;
+        setRecettes(recettesRes.data || []);
+        setFiliales(filialesRes.data || []);
+
+        // Stats
+        const total = (recettesRes.data || []).reduce((sum, r) => sum + r.montant, 0);
+        const count = recettesRes.data?.length || 0;
         const moyenne = count > 0 ? total / count : 0;
-
         setStats({ total, count, moyenne });
       } catch (err) {
-        console.error('Erreur recettes:', err);
-        alert(`Erreur: ${err.message}`);
+        console.error('Erreur chargement:', err);
+        toast.error(`Erreur de chargement: ${err.message}`);
       } finally {
         setLoading(false);
       }
     };
-
-    fetchRecettes();
+    fetchAll();
   }, []);
 
-  // Charger les filiales
-  useEffect(() => {
-    const fetchFiliales = async () => {
-      try {
-        const response = await axiosInstance.get('/filiales');
-        console.log('Filiales reçues:', response.data);
-        setFiliales(response.data || []);
-      } catch (err) {
-        console.error('Erreur filiales:', err);
-      }
-    };
-
-    fetchFiliales();
-  }, []);
-
+  // ✅ Créer une recette
   const handleCreateRecette = async (data) => {
     try {
       const response = await axiosInstance.post('/recettes', data);
-      setRecettes([response.data, ...recettes]);
+      setRecettes([response.data.recette || response.data, ...recettes]);
       setModalOpen(false);
-      alert(`✅ Versement de ${(response.data.montant / 1000000).toFixed(1)}M FCFA enregistré`);
+
+      // ✅ Recalculer les stats localement
+      const newCount = stats.count + 1;
+      const newTotal = stats.total + (data.montant || 0);
+      setStats({
+        total: newTotal,
+        count: newCount,
+        moyenne: newCount > 0 ? newTotal / newCount : 0
+      });
+
+      toast.success(`Versement de ${(data.montant / 1000000).toFixed(1)}M FCFA enregistré`);
     } catch (err) {
-      alert(`❌ Erreur: ${err.response?.data?.error || err.message}`);
+      toast.error(`Erreur: ${err.response?.data?.error || err.message}`);
     }
   };
 
-  const handleDeleteRecette = async (id) => {
-    if (!window.confirm('Êtes-vous sûr?')) return;
+  // ✅ Ouvrir confirmation suppression
+  const handleDeleteClick = (id) => setConfirmDelete(id);
+
+  // ✅ Confirmer suppression
+  const handleConfirmDelete = async () => {
+    const id = confirmDelete;
+    setConfirmDelete(null);
 
     try {
       await axiosInstance.delete(`/recettes/${id}`);
-      setRecettes(recettes.filter((r) => r.id !== id));
-      alert('✅ Versement supprimé');
+      const recetteSupprimee = recettes.find(r => r.id === id);
+      setRecettes(recettes.filter(r => r.id !== id));
+
+      // ✅ Recalculer les stats localement
+      const newCount = stats.count - 1;
+      const newTotal = stats.total - (recetteSupprimee?.montant || 0);
+      setStats({
+        total: newTotal,
+        count: newCount,
+        moyenne: newCount > 0 ? newTotal / newCount : 0
+      });
+
+      toast.success('Versement supprimé');
     } catch (err) {
-      alert(`❌ Erreur: ${err.message}`);
+      toast.error(`Erreur: ${err.response?.data?.error || err.message}`);
     }
   };
 
   const getFilialeName = (filialeId) => {
     const filiale = filiales.find((f) => f.id === filialeId);
     return filiale?.nom || 'N/A';
+  };
+
+  // ✅ Formatage montant propre
+  const formatMontant = (n) => {
+    return new Intl.NumberFormat('fr-FR', { maximumFractionDigits: 0 }).format(n);
   };
 
   const filteredRecettes = recettes.filter((r) => {
@@ -124,13 +147,16 @@ export function RecettesPage() {
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-2">Rechercher</label>
-            <input
-              type="text"
-              placeholder="Filiale, référence..."
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-              className="w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500"
-            />
+            <div className="relative">
+              <i className="ti ti-search absolute left-3 top-3 text-gray-400"></i>
+              <input
+                type="text"
+                placeholder="Filiale, référence..."
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+                className="w-full pl-10 pr-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500"
+              />
+            </div>
           </div>
 
           <div>
@@ -140,30 +166,38 @@ export function RecettesPage() {
               onChange={(e) => setFilialeFilter(e.target.value || null)}
               className="w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500"
             >
-              <option value="">Tous</option>
+              <option value="">Toutes</option>
               {filiales.map((f) => (
-                <option key={f.id} value={f.id}>
-                  {f.nom}
-                </option>
+                <option key={f.id} value={f.id}>{f.nom}</option>
               ))}
             </select>
           </div>
         </div>
       </div>
 
-      {/* Tableau recettes */}
+      {/* Contenu principal */}
       {loading ? (
-        <div className="flex justify-center items-center h-64">
-          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-green-600"></div>
-        </div>
+        <Spinner size="lg" label="Chargement des recettes..." />
+      ) : recettes.length === 0 ? (
+        <EmptyState
+          icon="💰"
+          title="Aucun versement"
+          message="Vous n'avez pas encore enregistré de versement. Cliquez sur le bouton pour en ajouter un."
+          action={
+            <button
+              onClick={() => setModalOpen(true)}
+              className="px-6 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition font-medium"
+            >
+              + Ajouter un versement
+            </button>
+          }
+        />
       ) : filteredRecettes.length === 0 ? (
-        <div className="bg-gray-50 rounded-lg p-12 text-center">
-          <i className="ti ti-cash-in text-4xl text-gray-300 mb-4"></i>
-          <p className="text-gray-500">Aucune recette trouvée</p>
-          {recettes.length === 0 && (
-            <p className="text-gray-400 text-sm mt-2">Total dans la DB: {recettes.length}</p>
-          )}
-        </div>
+        <EmptyState
+          icon="🔍"
+          title="Aucun résultat"
+          message="Aucune recette ne correspond à vos critères de recherche."
+        />
       ) : (
         <div className="bg-white rounded-lg border overflow-hidden">
           <table className="w-full">
@@ -187,7 +221,7 @@ export function RecettesPage() {
                     {getFilialeName(recette.filiale_id)}
                   </td>
                   <td className="px-6 py-4 text-sm font-bold text-green-600 text-right">
-                    {(recette.montant / 1000000).toFixed(2)}M
+                    {formatMontant(recette.montant)} FCFA
                   </td>
                   <td className="px-6 py-4 text-sm text-gray-600">
                     {recette.reference_paiement || '-'}
@@ -197,8 +231,9 @@ export function RecettesPage() {
                   </td>
                   <td className="px-6 py-4 text-center">
                     <button
-                      onClick={() => handleDeleteRecette(recette.id)}
+                      onClick={() => handleDeleteClick(recette.id)}
                       className="text-red-600 hover:text-red-800 text-sm"
+                      title="Supprimer"
                     >
                       <i className="ti ti-trash"></i>
                     </button>
@@ -222,6 +257,18 @@ export function RecettesPage() {
           </div>
         </div>
       )}
+
+      {/* ✅ ConfirmDialog */}
+      <ConfirmDialog
+        isOpen={confirmDelete !== null}
+        title="Supprimer le versement"
+        message="Êtes-vous sûr de vouloir supprimer ce versement ? Cette action est irréversible."
+        confirmText="🗑️ Supprimer"
+        cancelText="Annuler"
+        type="danger"
+        onConfirm={handleConfirmDelete}
+        onCancel={() => setConfirmDelete(null)}
+      />
     </div>
   );
 }

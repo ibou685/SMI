@@ -1,21 +1,17 @@
 // frontend/src/pages/Depenses/DepensesPage.jsx
-// Page gestion des dépenses - VERSION SIMPLE
 
 import { useEffect, useState } from 'react';
 import { axiosInstance } from '../../api/client';
 import { KPICard } from '../../components/KPICard';
 import { DepenseForm } from './DepenseForm';
+import { toast } from '../../store/toastStore';
+import { Spinner } from '../../components/Spinner';
+import { EmptyState } from '../../components/EmptyState';
+import { ConfirmDialog } from '../../components/ConfirmDialog';
 
 const CATEGORIES = [
-  'Salaires',
-  'Eau',
-  'Électricité',
-  'Carburant',
-  'Loyer',
-  'Maintenance',
-  'Fournitures',
-  'Communication',
-  'Divers'
+  'Salaires', 'Eau', 'Électricité', 'Carburant', 'Loyer',
+  'Maintenance', 'Fournitures', 'Communication', 'Divers'
 ];
 
 export function DepensesPage() {
@@ -25,6 +21,7 @@ export function DepensesPage() {
   const [searchTerm, setSearchTerm] = useState('');
   const [categoryFilter, setCategoryFilter] = useState(null);
   const [stats, setStats] = useState({ total: 0, count: 0, byCategory: {} });
+  const [confirmDelete, setConfirmDelete] = useState(null);
 
   // Charger dépenses
   useEffect(() => {
@@ -35,11 +32,9 @@ export function DepensesPage() {
         console.log('Dépenses reçues:', response.data);
         setDepenses(response.data || []);
 
-        // Calculer stats
         const total = (response.data || []).reduce((sum, d) => sum + d.montant, 0);
         const count = response.data?.length || 0;
 
-        // Grouper par catégorie
         const byCategory = {};
         (response.data || []).forEach((d) => {
           if (!byCategory[d.categorie]) {
@@ -52,35 +47,41 @@ export function DepensesPage() {
         setStats({ total, count, byCategory });
       } catch (err) {
         console.error('Erreur depenses:', err);
-        alert(`Erreur: ${err.message}`);
+        toast.error(`Erreur: ${err.message}`);
       } finally {
         setLoading(false);
       }
     };
-
     fetchDepenses();
   }, []);
 
   const handleCreateDepense = async (data) => {
     try {
       const response = await axiosInstance.post('/depenses', data);
-      setDepenses([response.data, ...depenses]);
+      setDepenses([response.data.depense, ...depenses]);
       setModalOpen(false);
-      alert(`✅ Dépense de ${(response.data.montant / 1000000).toFixed(1)}M FCFA enregistrée`);
+      toast.success(`Dépense de ${(response.data.depense.montant / 1000000).toFixed(1)}M FCFA enregistrée`);
     } catch (err) {
-      alert(`❌ Erreur: ${err.response?.data?.error || err.message}`);
+      toast.error(`Erreur: ${err.response?.data?.error || err.message}`);
     }
   };
 
-  const handleDeleteDepense = async (id) => {
-    if (!window.confirm('Êtes-vous sûr?')) return;
+  // ✅ Ouvrir la dialog de confirmation
+  const handleDeleteClick = (id) => {
+    setConfirmDelete(id);
+  };
+
+  // ✅ Confirmer la suppression
+  const handleConfirmDelete = async () => {
+    const id = confirmDelete;
+    setConfirmDelete(null);
 
     try {
       await axiosInstance.delete(`/depenses/${id}`);
-      setDepenses(depenses.filter((d) => d.id !== id));
-      alert('✅ Dépense supprimée');
+      setDepenses(depenses.filter(d => d.id !== id));
+      toast.success('Dépense supprimée');
     } catch (err) {
-      alert(`❌ Erreur: ${err.message}`);
+      toast.error(`Erreur: ${err.response?.data?.error || err.message}`);
     }
   };
 
@@ -127,18 +128,8 @@ export function DepensesPage() {
 
       {/* KPIs */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-8">
-        <KPICard
-          title="Total dépenses"
-          value={stats.total}
-          unit="FCFA"
-          color="red"
-        />
-        <KPICard
-          title="Nombre dépenses"
-          value={stats.count}
-          unit=""
-          color="orange"
-        />
+        <KPICard title="Total dépenses" value={stats.total} unit="FCFA" color="red" />
+        <KPICard title="Nombre dépenses" value={stats.count} unit="" color="orange" />
       </div>
 
       {/* Catégories overview */}
@@ -162,11 +153,8 @@ export function DepensesPage() {
       {/* Filtres */}
       <div className="bg-white rounded-lg border p-4 mb-6">
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          {/* Recherche */}
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">
-              Rechercher
-            </label>
+            <label className="block text-sm font-medium text-gray-700 mb-2">Rechercher</label>
             <div className="relative">
               <i className="ti ti-search absolute left-3 top-3 text-gray-400"></i>
               <input
@@ -179,11 +167,8 @@ export function DepensesPage() {
             </div>
           </div>
 
-          {/* Catégorie */}
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">
-              Catégorie
-            </label>
+            <label className="block text-sm font-medium text-gray-700 mb-2">Catégorie</label>
             <select
               value={categoryFilter || ''}
               onChange={(e) => setCategoryFilter(e.target.value || null)}
@@ -191,28 +176,36 @@ export function DepensesPage() {
             >
               <option value="">Tous</option>
               {CATEGORIES.map((cat) => (
-                <option key={cat} value={cat}>
-                  {cat}
-                </option>
+                <option key={cat} value={cat}>{cat}</option>
               ))}
             </select>
           </div>
         </div>
       </div>
 
-      {/* Tableau dépenses */}
+      {/* Contenu principal */}
       {loading ? (
-        <div className="flex justify-center items-center h-64">
-          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-red-600"></div>
-        </div>
+        <Spinner size="lg" label="Chargement des dépenses..." />
+      ) : depenses.length === 0 ? (
+        <EmptyState
+          icon="💸"
+          title="Aucune dépense"
+          message="Vous n'avez pas encore enregistré de dépense. Cliquez sur le bouton pour en ajouter une."
+          action={
+            <button
+              onClick={() => setModalOpen(true)}
+              className="px-6 py-2 bg-red-700 text-white rounded-lg hover:bg-red-800 transition font-medium"
+            >
+              + Ajouter une dépense
+            </button>
+          }
+        />
       ) : filteredDepenses.length === 0 ? (
-        <div className="bg-gray-50 rounded-lg p-12 text-center">
-          <i className="ti ti-cash-out text-4xl text-gray-300 mb-4"></i>
-          <p className="text-gray-500">Aucune dépense trouvée</p>
-          {depenses.length === 0 && (
-            <p className="text-gray-400 text-sm mt-2">Total dans la DB: {depenses.length}</p>
-          )}
-        </div>
+        <EmptyState
+          icon="🔍"
+          title="Aucun résultat"
+          message="Aucune dépense ne correspond à vos critères de recherche."
+        />
       ) : (
         <div className="bg-white rounded-lg border overflow-hidden">
           <table className="w-full">
@@ -243,9 +236,11 @@ export function DepensesPage() {
                     {depense.description || '-'}
                   </td>
                   <td className="px-6 py-4 text-center">
+                    {/* ✅ Corrigé : handleDeleteClick au lieu de handleDeleteDepense */}
                     <button
-                      onClick={() => handleDeleteDepense(depense.id)}
+                      onClick={() => handleDeleteClick(depense.id)}
                       className="text-red-600 hover:text-red-800 text-sm"
+                      title="Supprimer"
                     >
                       <i className="ti ti-trash"></i>
                     </button>
@@ -268,6 +263,18 @@ export function DepensesPage() {
           </div>
         </div>
       )}
+
+      {/* ✅ Dialog de confirmation */}
+      <ConfirmDialog
+        isOpen={confirmDelete !== null}
+        title="Supprimer la dépense"
+        message="Êtes-vous sûr de vouloir supprimer cette dépense ? Cette action est irréversible."
+        confirmText="🗑️ Supprimer"
+        cancelText="Annuler"
+        type="danger"
+        onConfirm={handleConfirmDelete}
+        onCancel={() => setConfirmDelete(null)}
+      />
     </div>
   );
 }

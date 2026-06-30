@@ -1,8 +1,11 @@
-// frontend/src/pages/Dashboard.jsx
-// Dashboard PRO avancé avec KPIs, graphiques, alertes et tendances
+// frontend/src/pages/Dashboard.jsx - VERSION UX COMPLÈTE
 
 import { useEffect, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { axiosInstance } from '../api/client.js';
+import { toast } from '../store/toastStore';
+import { Spinner } from '../components/Spinner';
+import { EmptyState } from '../components/EmptyState';
 import {
   LineChart, Line,
   BarChart, Bar,
@@ -18,7 +21,7 @@ export function Dashboard() {
   const [recettes, setRecettes] = useState([]);
   const [depenses, setDepenses] = useState([]);
   const [alertes, setAlertes] = useState([]);
-  const [period, setPeriod] = useState(30); // jours
+  const [period, setPeriod] = useState(30);
 
   // Couleurs SMI
   const colors = {
@@ -31,7 +34,7 @@ export function Dashboard() {
     blue: '#3B82F6'
   };
 
-  // Charger les données
+  // ✅ Charger les données
   useEffect(() => {
     const fetchData = async () => {
       try {
@@ -49,6 +52,7 @@ export function Dashboard() {
         setAlertes(alertesRes.data || []);
       } catch (err) {
         console.error('Erreur chargement:', err);
+        toast.error(`Erreur de chargement du dashboard: ${err.message}`);
       } finally {
         setLoading(false);
       }
@@ -127,17 +131,40 @@ export function Dashboard() {
     }).format(n);
   };
 
+  // ✅ Format montant compact (pour les graphiques)
+  const formatMontantCompact = (n) => {
+    if (n >= 1000000) return `${(n / 1000000).toFixed(1)}M`;
+    if (n >= 1000) return `${(n / 1000).toFixed(0)}K`;
+    return n.toString();
+  };
+
+  // ✅ Icône selon type d'alerte
+  const getAlerteIcon = (type) => {
+    switch (type) {
+      case 'Retard paiement': return '⏰';
+      case 'Dépense inhabituelle': return '💸';
+      case 'Baisse recettes': return '📉';
+      default: return '⚠️';
+    }
+  };
+
   if (loading) {
     return (
-      <div className="flex justify-center items-center h-screen">
-        <div className="animate-spin rounded-full h-16 w-16 border-4 border-red-700 border-t-transparent"></div>
+      <div className="min-h-screen bg-gray-50">
+        <div className="bg-gradient-to-r from-red-700 to-red-900 text-white shadow-xl">
+          <div className="max-w-7xl mx-auto px-6 py-10">
+            <h1 className="text-4xl font-bold">📊 Tableau de Bord SMI</h1>
+            <p className="text-red-100 mt-2">Vue d'ensemble financière et opérationnelle</p>
+          </div>
+        </div>
+        <Spinner size="lg" label="Chargement du tableau de bord..." />
       </div>
     );
   }
 
   return (
     <div className="min-h-screen bg-gray-50">
-      {/* Header PRO */}
+      {/* Header */}
       <div className="bg-gradient-to-r from-red-700 to-red-900 text-white shadow-xl">
         <div className="max-w-7xl mx-auto px-6 py-10">
           <h1 className="text-4xl font-bold">📊 Tableau de Bord SMI</h1>
@@ -150,7 +177,7 @@ export function Dashboard() {
         {/* KPIs */}
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
           {/* KPI: Filiales */}
-          <div className="bg-white rounded-lg shadow-lg p-6 border-t-4 border-blue-500">
+          <div className="bg-white rounded-lg shadow-lg p-6 border-t-4 border-blue-500 card-hover">
             <div className="flex items-center justify-between">
               <div>
                 <p className="text-gray-600 text-sm font-semibold">Total Filiales</p>
@@ -161,7 +188,7 @@ export function Dashboard() {
           </div>
 
           {/* KPI: Recettes */}
-          <div className="bg-white rounded-lg shadow-lg p-6 border-t-4 border-green-500">
+          <div className="bg-white rounded-lg shadow-lg p-6 border-t-4 border-green-500 card-hover">
             <div className="flex items-center justify-between">
               <div>
                 <p className="text-gray-600 text-sm font-semibold">Total Recettes</p>
@@ -172,7 +199,7 @@ export function Dashboard() {
           </div>
 
           {/* KPI: Dépenses */}
-          <div className="bg-white rounded-lg shadow-lg p-6 border-t-4 border-orange-500">
+          <div className="bg-white rounded-lg shadow-lg p-6 border-t-4 border-orange-500 card-hover">
             <div className="flex items-center justify-between">
               <div>
                 <p className="text-gray-600 text-sm font-semibold">Total Dépenses</p>
@@ -183,7 +210,7 @@ export function Dashboard() {
           </div>
 
           {/* KPI: Solde */}
-          <div className={`bg-white rounded-lg shadow-lg p-6 border-t-4 ${stats.solde >= 0 ? 'border-green-500' : 'border-red-500'}`}>
+          <div className={`bg-white rounded-lg shadow-lg p-6 border-t-4 ${stats.solde >= 0 ? 'border-green-500' : 'border-red-500'} card-hover`}>
             <div className="flex items-center justify-between">
               <div>
                 <p className="text-gray-600 text-sm font-semibold">Solde Net</p>
@@ -196,23 +223,33 @@ export function Dashboard() {
           </div>
         </div>
 
-        {/* Alertes */}
+        {/* ✅ Alertes (amélioré) */}
         {stats.alertesActives > 0 && (
           <div className="mb-8 p-6 bg-red-50 border-l-4 border-red-700 rounded-lg">
             <div className="flex items-start gap-4">
               <span className="text-3xl">🚨</span>
               <div className="flex-1">
-                <h3 className="font-bold text-red-900 text-lg">{stats.alertesActives} Alerte(s) Active(s)</h3>
+                <h3 className="font-bold text-red-900 text-lg">
+                  {stats.alertesActives} Alerte(s) Active(s)
+                </h3>
                 <div className="mt-3 space-y-2">
                   {alertes.filter(a => a.statut !== 'Résolue').slice(0, 3).map((alerte) => (
-                    <p key={alerte.id} className="text-sm text-red-800">
-                      • {alerte.type}: {alerte.message}
-                    </p>
+                    <div key={alerte.id} className="flex items-start gap-2 text-sm text-red-800">
+                      <span>{getAlerteIcon(alerte.type)}</span>
+                      <div>
+                        <span className="font-semibold">{alerte.titre}</span>
+                        <p className="text-red-700 text-xs mt-0.5">{alerte.description || alerte.message}</p>
+                      </div>
+                    </div>
                   ))}
                 </div>
-                <a href="/alertes" className="text-red-700 font-semibold text-sm mt-3 inline-block hover:underline">
+                {/* ✅ Link au lieu de <a href> */}
+                <Link
+                  to="/alertes"
+                  className="text-red-700 font-semibold text-sm mt-3 inline-block hover:underline"
+                >
                   Voir toutes les alertes →
-                </a>
+                </Link>
               </div>
             </div>
           </div>
@@ -243,7 +280,7 @@ export function Dashboard() {
               <LineChart data={tendances}>
                 <CartesianGrid strokeDasharray="3 3" />
                 <XAxis dataKey="date" fontSize={12} />
-                <YAxis fontSize={12} />
+                <YAxis fontSize={12} tickFormatter={formatMontantCompact} />
                 <Tooltip formatter={(v) => formatMontant(v)} />
                 <Legend />
                 <Line
@@ -276,7 +313,7 @@ export function Dashboard() {
               <BarChart data={donneesParDomaine}>
                 <CartesianGrid strokeDasharray="3 3" />
                 <XAxis dataKey="name" fontSize={12} />
-                <YAxis fontSize={12} />
+                <YAxis fontSize={12} tickFormatter={formatMontantCompact} />
                 <Tooltip formatter={(v) => formatMontant(v)} />
                 <Legend />
                 <Bar dataKey="recettes" fill={colors.green} name="Recettes" />
@@ -297,7 +334,7 @@ export function Dashboard() {
                   cx="50%"
                   cy="50%"
                   outerRadius={80}
-                  label={(entry) => `${((entry.recettes / stats.totalRecettes) * 100).toFixed(0)}%`}
+                  label={(entry) => stats.totalRecettes > 0 ? `${((entry.recettes / stats.totalRecettes) * 100).toFixed(0)}%` : '0%'}
                 >
                   {donneesParDomaine.map((_, idx) => (
                     <Cell key={idx} fill={[colors.red, colors.blue, colors.green, colors.orange, '#8B5CF6', '#EC4899', '#14B8A6', '#6366F1'][idx % 8]} />
@@ -314,18 +351,32 @@ export function Dashboard() {
           <h3 className="text-2xl font-bold text-gray-900 mb-6">🏆 Classement Filiales par Performance</h3>
 
           {donneesParFiliale.length === 0 ? (
-            <p className="text-gray-600 text-center py-8">Aucune filiale disponible</p>
+            <EmptyState
+              icon="🏢"
+              title="Aucune filiale"
+              message="Vous n'avez pas encore créé de filiale. Ajoutez-en une pour voir le classement."
+              action={
+                <Link
+                  to="/filiales"
+                  className="px-6 py-2 bg-red-700 text-white rounded-lg hover:bg-red-800 transition font-medium"
+                >
+                  + Ajouter une filiale
+                </Link>
+              }
+            />
           ) : (
             <div className="space-y-3">
               {donneesParFiliale.map((filiale, idx) => (
                 <div
                   key={filiale.id}
-                  className="flex items-center gap-4 p-4 bg-gray-50 rounded-lg hover:bg-gray-100 transition border-l-4"
+                  className="flex items-center gap-4 p-4 bg-gray-50 rounded-lg hover:bg-gray-100 transition border-l-4 card-hover"
                   style={{ borderColor: idx === 0 ? colors.red : idx === 1 ? colors.blue : colors.orange }}
                 >
                   {/* Rang */}
                   <div className="text-center">
-                    <div className="text-2xl font-bold text-gray-900">#{idx + 1}</div>
+                    <div className="text-2xl font-bold text-gray-900">
+                      {idx === 0 ? '🥇' : idx === 1 ? '🥈' : idx === 2 ? '🥉' : `#${idx + 1}`}
+                    </div>
                   </div>
 
                   {/* Infos filiale */}
@@ -335,9 +386,9 @@ export function Dashboard() {
                   </div>
 
                   {/* Montants */}
-                  <div className="text-right">
+                  <div className="text-right hidden md:block">
                     <p className="text-sm text-gray-600">Recettes / Dépenses</p>
-                    <p className="font-bold text-gray-900">
+                    <p className="font-bold text-gray-900 text-sm">
                       {formatMontant(filiale.recettes)} / {formatMontant(filiale.depenses)}
                     </p>
                   </div>
@@ -359,7 +410,7 @@ export function Dashboard() {
         <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mt-8">
           {/* Filiale la plus performante */}
           {donneesParFiliale.length > 0 && (
-            <div className="bg-gradient-to-br from-green-50 to-green-100 rounded-lg shadow-lg p-6 border-l-4 border-green-600">
+            <div className="bg-gradient-to-br from-green-50 to-green-100 rounded-lg shadow-lg p-6 border-l-4 border-green-600 card-hover">
               <p className="text-green-900 font-semibold text-sm">🌟 Plus Performante</p>
               <p className="text-2xl font-bold text-green-900 mt-2">{donneesParFiliale[0].nom}</p>
               <p className="text-green-700 mt-2">{formatMontant(donneesParFiliale[0].solde)}</p>
@@ -367,7 +418,7 @@ export function Dashboard() {
           )}
 
           {/* Ratio rentabilité */}
-          <div className="bg-gradient-to-br from-blue-50 to-blue-100 rounded-lg shadow-lg p-6 border-l-4 border-blue-600">
+          <div className="bg-gradient-to-br from-blue-50 to-blue-100 rounded-lg shadow-lg p-6 border-l-4 border-blue-600 card-hover">
             <p className="text-blue-900 font-semibold text-sm">📊 Ratio Rentabilité</p>
             <p className="text-2xl font-bold text-blue-900 mt-2">
               {stats.totalRecettes > 0 ? ((stats.totalRecettes / (stats.totalRecettes + stats.totalDepenses)) * 100).toFixed(1) : 0}%
@@ -376,7 +427,7 @@ export function Dashboard() {
           </div>
 
           {/* Ticket moyen */}
-          <div className="bg-gradient-to-br from-purple-50 to-purple-100 rounded-lg shadow-lg p-6 border-l-4 border-purple-600">
+          <div className="bg-gradient-to-br from-purple-50 to-purple-100 rounded-lg shadow-lg p-6 border-l-4 border-purple-600 card-hover">
             <p className="text-purple-900 font-semibold text-sm">💸 Ticket Moyen</p>
             <p className="text-2xl font-bold text-purple-900 mt-2">
               {formatMontant(recettes.length > 0 ? stats.totalRecettes / recettes.length : 0)}
