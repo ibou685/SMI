@@ -100,6 +100,37 @@ app.get('/health', (req, res) => {
   });
 });
 
+// ============================================
+// ROUTE KEEP-ALIVE (pour cron-job.org)
+// Ping Supabase pour empêcher la pause du free tier
+// ============================================
+app.get('/api/keep-alive', async (req, res) => {
+  try {
+    // ✅ Faire une requête simple vers Supabase
+    const { data, error } = await supabase
+      .from('parametres')
+      .select('id')
+      .limit(1);
+
+    if (error) throw error;
+
+    res.json({
+      status: 'OK',
+      message: 'Supabase est actif',
+      timestamp: new Date().toISOString(),
+      supabase_connected: true
+    });
+  } catch (err) {
+    console.error('❌ Keep-alive error:', err.message);
+    res.status(500).json({
+      status: 'ERROR',
+      message: err.message,
+      timestamp: new Date().toISOString(),
+      supabase_connected: false
+    });
+  }
+});
+
 app.get('/api/test', async (req, res) => {
   try {
     const { data, error } = await supabase
